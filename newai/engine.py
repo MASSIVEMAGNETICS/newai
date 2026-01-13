@@ -13,12 +13,14 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Tuple
 from urllib import error, parse, request
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEADERS = {"User-Agent": "newai-production/1.0 (+https://github.com/MASSIVEMAGNETICS/newai)"}
+UTF8_MAX_BYTES_PER_CHAR = 4
+MAX_CLAIM_LENGTH = 240
 
 
 @dataclass
@@ -122,7 +124,7 @@ class HTMLTextExtractor:
 class _LinkCollector(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.links: List[tuple[str, str]] = []
+        self.links: List[Tuple[str, str]] = []
         self._current_href: Optional[str] = None
         self._buffer: List[str] = []
 
@@ -268,7 +270,7 @@ class ContentFetcher:
         req = request.Request(record.url, headers=DEFAULT_HEADERS)
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
-                byte_limit = self.max_chars * 4  # assume up to 4 bytes/char for UTF-8 safety
+                byte_limit = self.max_chars * UTF8_MAX_BYTES_PER_CHAR  # assume up to 4 bytes/char for UTF-8 safety
                 raw = resp.read(byte_limit)  # limit bytes to keep memory bounded
                 content = raw.decode("utf-8", errors="ignore")
                 last_modified = resp.headers.get("Last-Modified")
@@ -319,8 +321,12 @@ class Synthesizer:
         claims = []
         for src in top_sources[:5]:
             sentence = src.snippet.split(". ")
-            head = sentence[0].strip() if sentence and sentence[0].strip() else src.snippet[:240]
-            claims.append(f"- {head[:240]} (source: {src.url})")
+            head = (
+                sentence[0].strip()
+                if sentence and sentence[0].strip()
+                else src.snippet[:MAX_CLAIM_LENGTH]
+            )
+            claims.append(f"- {head[:MAX_CLAIM_LENGTH]} (source: {src.url})")
 
         joined_claims = "\n".join(claims)
         aggregate_confidence = round(sum(s.confidence for s in top_sources) / len(top_sources), 3)

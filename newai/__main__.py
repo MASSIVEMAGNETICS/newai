@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Any
+from typing import Any, List, Optional
 from dataclasses import asdict
 
 from .engine import get_engine
@@ -26,7 +26,7 @@ def _print_answer(payload: Any) -> None:
         print(f"     {src.url}")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Production-grade zero-pretraining retrieval engine."
     )

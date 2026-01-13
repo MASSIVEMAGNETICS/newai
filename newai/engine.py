@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import json
 import logging
 import ipaddress
@@ -11,6 +12,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
+from html.parser import HTMLParser
 from typing import Iterable, List, Optional, Sequence
 from urllib import error, parse, request
 
@@ -57,6 +59,7 @@ class MemoryStore:
             """
         )
         self._conn.commit()
+        atexit.register(self.close)
 
     def get(self, question: str, max_age_hours: float = 24.0) -> Optional[AnswerRecord]:
         cur = self._conn.execute(
@@ -91,6 +94,12 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
 
 class HTMLTextExtractor:
     """Lightweight HTML-to-text converter using regular expressions only."""
@@ -108,6 +117,33 @@ class HTMLTextExtractor:
         text = unescape(text)
         text = cls.whitespace_re.sub(" ", text)
         return text.strip()
+
+
+class _LinkCollector(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: List[tuple[str, str]] = []
+        self._current_href: Optional[str] = None
+        self._buffer: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() != "a":
+            return
+        href = dict(attrs).get("href")
+        if href:
+            self._current_href = href
+            self._buffer = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_href:
+            self._buffer.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._current_href:
+            text = "".join(self._buffer)
+            self.links.append((self._current_href, text))
+            self._current_href = None
+            self._buffer = []
 
 
 def _is_safe_url(url: str) -> bool:
@@ -167,10 +203,11 @@ def _combine_confidence(domain_score: float, recency_score: float) -> float:
 
 
 def _parse_links(html: str, limit: int) -> List[SourceRecord]:
-    anchors = re.findall(r'<a[^>]+href="(http[^"]+)"[^>]*>(.*?)</a>', html, flags=re.I | re.S)
+    parser = _LinkCollector()
+    parser.feed(html)
     results: List[SourceRecord] = []
     seen = set()
-    for href, text in anchors:
+    for href, text in parser.links:
         if (
             href in seen
             or "duckduckgo.com" in href
@@ -231,7 +268,8 @@ class ContentFetcher:
         req = request.Request(record.url, headers=DEFAULT_HEADERS)
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read(self.max_chars * 4)  # limit bytes to keep memory bounded
+                byte_limit = self.max_chars * 4  # assume up to 4 bytes/char for UTF-8 safety
+                raw = resp.read(byte_limit)  # limit bytes to keep memory bounded
                 content = raw.decode("utf-8", errors="ignore")
                 last_modified = resp.headers.get("Last-Modified")
         except error.HTTPError as exc:  # pragma: no cover - network defensive

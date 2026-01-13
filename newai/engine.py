@@ -111,8 +111,8 @@ class MemoryStore:
 class HTMLTextExtractor:
     """Lightweight HTML-to-text converter using regular expressions only."""
 
-    script_re = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.I | re.S)
-    style_re = re.compile(r"<style\b[^>]*>.*?</style\s*>", re.I | re.S)
+    script_re = re.compile(r"<script\b[^>]*>.*?</script[^>]*>", re.I | re.S)
+    style_re = re.compile(r"<style\b[^>]*>.*?</style[^>]*>", re.I | re.S)
     tag_re = re.compile(r"<[^>]+>")
     whitespace_re = re.compile(r"\s+")
 
@@ -218,7 +218,7 @@ def _parse_links(html: str, limit: int) -> List[SourceRecord]:
         host = parse.urlparse(href).hostname or ""
         if (
             href in seen
-            or host.endswith("duckduckgo.com")
+            or host == "duckduckgo.com"
             or "javascript:" in href
             or not _is_safe_url(href)
         ):

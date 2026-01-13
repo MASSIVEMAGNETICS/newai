@@ -221,13 +221,14 @@ def _parse_links(html: str, limit: int) -> List[SourceRecord]:
         title = HTMLTextExtractor.extract(text)[:200] or "Untitled"
         if not title.strip():
             continue
-        score = _combine_confidence(_domain_score(href), 0.5)
+        domain_score = _domain_score(href)
+        score = _combine_confidence(domain_score, 0.5)
         results.append(
             SourceRecord(
                 url=href,
                 title=title,
                 snippet="",
-                domain_score=_domain_score(href),
+                domain_score=domain_score,
                 recency_score=0.5,
                 confidence=score,
             )
@@ -316,6 +317,15 @@ class Synthesizer:
         top_sources = [s for s in sources if s.snippet]
         if not top_sources:
             top_sources = list(sources)
+        if not top_sources:
+            return AnswerRecord(
+                question=question,
+                answer="Sources were retrieved but contained no usable content.",
+                confidence=0.0,
+                sources=[],
+                cached=False,
+                created_at=time.time(),
+            )
 
         # Build a concise synthesis
         claims = []
@@ -323,7 +333,7 @@ class Synthesizer:
             sentence = src.snippet.split(". ")
             head = (
                 sentence[0].strip()
-                if sentence and sentence[0].strip()
+                if sentence and sentence[0] and sentence[0].strip()
                 else src.snippet[:MAX_CLAIM_LENGTH]
             )
             claims.append(f"- {head[:MAX_CLAIM_LENGTH]} (source: {src.url})")

@@ -3,11 +3,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from typing import Any
 from dataclasses import asdict
 
-from .engine import NewAIEngine
+from .engine import get_engine
+
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 def _print_answer(payload: Any) -> None:
@@ -46,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     question = args.question or "What is the latest on responsible AI regulation?"
-    engine = NewAIEngine()
+    engine = get_engine()
     result = asyncio.run(engine.answer(question, max_sources=args.max_sources, force_refresh=args.force_refresh))
 
     if args.json:

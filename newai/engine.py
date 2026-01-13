@@ -4,6 +4,7 @@ import logging
 import ipaddress
 import os
 import re
+import socket
 import sqlite3
 import time
 from dataclasses import dataclass, asdict
@@ -14,7 +15,6 @@ from typing import Iterable, List, Optional, Sequence
 from urllib import error, parse, request
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 DEFAULT_HEADERS = {"User-Agent": "newai-production/1.0 (+https://github.com/MASSIVEMAGNETICS/newai)"}
 
@@ -113,7 +113,7 @@ class HTMLTextExtractor:
 def _is_safe_url(url: str) -> bool:
     try:
         parsed = parse.urlparse(url)
-    except Exception:
+    except ValueError:
         return False
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
@@ -149,7 +149,7 @@ def _recency_score(last_modified: Optional[str]) -> float:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
-    except Exception:
+    except (ValueError, TypeError):
         return 0.5
     if age_days <= 1:
         return 1.0
@@ -211,7 +211,7 @@ class WebSearchClient:
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
-        except Exception as exc:  # pragma: no cover - defensive
+        except (error.URLError, error.HTTPError, socket.timeout) as exc:  # pragma: no cover - defensive
             logger.warning("Search failed for %s: %s", query, exc)
             return []
         return _parse_links(html, limit)
@@ -237,7 +237,7 @@ class ContentFetcher:
         except error.HTTPError as exc:  # pragma: no cover - network defensive
             logger.info("HTTP error on %s: %s", record.url, exc)
             return record
-        except Exception as exc:  # pragma: no cover - network defensive
+        except (error.URLError, socket.timeout) as exc:  # pragma: no cover - network defensive
             logger.info("Fetch failed for %s: %s", record.url, exc)
             return record
 
@@ -281,8 +281,8 @@ class Synthesizer:
         claims = []
         for src in top_sources[:5]:
             sentence = src.snippet.split(". ")
-            head = sentence[0] if sentence else src.snippet
-            claims.append(f"- {head.strip()[:240]} (source: {src.url})")
+            head = sentence[0].strip() if sentence and sentence[0].strip() else src.snippet[:240]
+            claims.append(f"- {head[:240]} (source: {src.url})")
 
         joined_claims = "\n".join(claims)
         aggregate_confidence = round(sum(s.confidence for s in top_sources) / len(top_sources), 3)
@@ -361,8 +361,21 @@ class NewAIEngine:
         return answer
 
 
-async def ask(question: str, max_sources: int = 5, force_refresh: bool = False) -> AnswerRecord:
-    return await _ENGINE.answer(question, max_sources=max_sources, force_refresh=force_refresh)
+_ENGINE: Optional[NewAIEngine] = None
 
 
-_ENGINE = NewAIEngine()
+def get_engine() -> NewAIEngine:
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = NewAIEngine()
+    return _ENGINE
+
+
+async def ask(
+    question: str,
+    max_sources: int = 5,
+    force_refresh: bool = False,
+    engine: Optional[NewAIEngine] = None,
+) -> AnswerRecord:
+    active_engine = engine or get_engine()
+    return await active_engine.answer(question, max_sources=max_sources, force_refresh=force_refresh)

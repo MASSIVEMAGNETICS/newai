@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HEADERS = {"User-Agent": "newai-production/1.0 (+https://github.com/MASSIVEMAGNETICS/newai)"}
 UTF8_MAX_BYTES_PER_CHAR = 4
 MAX_CLAIM_LENGTH = 240
+SEARCH_RESULT_MULTIPLIER = 2
 
 
 @dataclass
@@ -51,6 +53,7 @@ class MemoryStore:
         os.makedirs(cache_dir, exist_ok=True)
         self.path = path or os.path.join(cache_dir, "memory.db")
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._lock = threading.Lock()
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS queries(
@@ -64,10 +67,11 @@ class MemoryStore:
         atexit.register(self.close)
 
     def get(self, question: str, max_age_hours: float = 24.0) -> Optional[AnswerRecord]:
-        cur = self._conn.execute(
-            "SELECT response, created_at FROM queries WHERE question = ?", (question.strip(),)
-        )
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT response, created_at FROM queries WHERE question = ?", (question.strip(),)
+            )
+            row = cur.fetchone()
         if not row:
             return None
         response_json, created_at = row
@@ -90,11 +94,12 @@ class MemoryStore:
             "confidence": answer.confidence,
             "sources": [asdict(s) for s in answer.sources],
         }
-        self._conn.execute(
-            "INSERT OR REPLACE INTO queries(question, response, created_at) VALUES (?, ?, ?)",
-            (answer.question.strip(), json.dumps(payload), answer.created_at),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO queries(question, response, created_at) VALUES (?, ?, ?)",
+                (answer.question.strip(), json.dumps(payload), answer.created_at),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
         try:
@@ -272,7 +277,7 @@ class ContentFetcher:
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
                 byte_limit = self.max_chars * UTF8_MAX_BYTES_PER_CHAR  # assume up to 4 bytes/char for UTF-8 safety
-                raw = resp.read(byte_limit + UTF8_MAX_BYTES_PER_CHAR)  # small buffer avoids cutting UTF-8 codepoints
+                raw = resp.read(byte_limit)  # limit bytes to keep memory bounded
                 content = raw.decode("utf-8", errors="ignore")
                 last_modified = resp.headers.get("Last-Modified")
         except error.HTTPError as exc:  # pragma: no cover - network defensive
@@ -321,7 +326,7 @@ class Synthesizer:
         # Build a concise synthesis
         claims = []
         for src in top_sources[:5]:
-            sentence = src.snippet.split(". ")
+            sentence = re.split(r"(?<=[.!?])\s+", src.snippet)
             head = (
                 sentence[0].strip()
                 if sentence and sentence[0].strip()
@@ -398,7 +403,7 @@ class NewAIEngine:
                     continue
                 seen_urls.add(item.url)
                 merged.append(item)
-        merged = merged[: max_sources * 2]  # keep top across variations
+        merged = merged[: max_sources * SEARCH_RESULT_MULTIPLIER]  # keep top across variations
 
         fetched = await self._fetch_sources(merged[:max_sources])
         answer = self.synthesizer.synthesize(question, fetched)

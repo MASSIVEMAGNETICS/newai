@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
 import sys
 from typing import Any
+from dataclasses import asdict
 
 from .engine import NewAIEngine
 
@@ -53,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                     "question": result.question,
                     "answer": result.answer,
                     "confidence": result.confidence,
-                    "sources": [src.__dict__ for src in result.sources],
+                    "sources": [asdict(src) for src in result.sources],
                     "cached": result.cached,
                     "created_at": result.created_at,
                 },

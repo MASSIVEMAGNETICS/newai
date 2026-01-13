@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import ipaddress
 import os
 import re
 import sqlite3
@@ -109,6 +110,26 @@ class HTMLTextExtractor:
         return text.strip()
 
 
+def _is_safe_url(url: str) -> bool:
+    try:
+        parsed = parse.urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = parsed.hostname or ""
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_reserved:
+            return False
+    except ValueError:
+        # Not an IP address, allow domain names
+        pass
+    return True
+
+
 def _domain_score(url: str) -> float:
     hostname = parse.urlparse(url).hostname or ""
     if hostname.endswith(".gov"):
@@ -150,7 +171,12 @@ def _parse_links(html: str, limit: int) -> List[SourceRecord]:
     results: List[SourceRecord] = []
     seen = set()
     for href, text in anchors:
-        if href in seen or "duckduckgo.com" in href or "javascript:" in href:
+        if (
+            href in seen
+            or "duckduckgo.com" in href
+            or "javascript:" in href
+            or not _is_safe_url(href)
+        ):
             continue
         seen.add(href)
         title = HTMLTextExtractor.extract(text)[:200] or "Untitled"
@@ -199,6 +225,9 @@ class ContentFetcher:
         self.max_chars = max_chars
 
     def fetch(self, record: SourceRecord) -> SourceRecord:
+        if not _is_safe_url(record.url):
+            logger.info("Skipping unsafe URL: %s", record.url)
+            return record
         req = request.Request(record.url, headers=DEFAULT_HEADERS)
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
@@ -333,5 +362,7 @@ class NewAIEngine:
 
 
 async def ask(question: str, max_sources: int = 5, force_refresh: bool = False) -> AnswerRecord:
-    engine = NewAIEngine()
-    return await engine.answer(question, max_sources=max_sources, force_refresh=force_refresh)
+    return await _ENGINE.answer(question, max_sources=max_sources, force_refresh=force_refresh)
+
+
+_ENGINE = NewAIEngine()

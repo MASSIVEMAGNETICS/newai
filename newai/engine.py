@@ -50,7 +50,7 @@ class MemoryStore:
         cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "newai")
         os.makedirs(cache_dir, exist_ok=True)
         self.path = path or os.path.join(cache_dir, "memory.db")
-        self._conn = sqlite3.connect(self.path)
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS queries(
@@ -272,7 +272,7 @@ class ContentFetcher:
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
                 byte_limit = self.max_chars * UTF8_MAX_BYTES_PER_CHAR  # assume up to 4 bytes/char for UTF-8 safety
-                raw = resp.read(byte_limit)  # limit bytes to keep memory bounded
+                raw = resp.read(byte_limit + UTF8_MAX_BYTES_PER_CHAR)  # small buffer avoids cutting UTF-8 codepoints
                 content = raw.decode("utf-8", errors="ignore")
                 last_modified = resp.headers.get("Last-Modified")
         except error.HTTPError as exc:  # pragma: no cover - network defensive
@@ -317,15 +317,6 @@ class Synthesizer:
         top_sources = [s for s in sources if s.snippet]
         if not top_sources:
             top_sources = list(sources)
-        if not top_sources:
-            return AnswerRecord(
-                question=question,
-                answer="Sources were retrieved but contained no usable content.",
-                confidence=0.0,
-                sources=[],
-                cached=False,
-                created_at=time.time(),
-            )
 
         # Build a concise synthesis
         claims = []
@@ -333,7 +324,7 @@ class Synthesizer:
             sentence = src.snippet.split(". ")
             head = (
                 sentence[0].strip()
-                if sentence and sentence[0] and sentence[0].strip()
+                if sentence and sentence[0].strip()
                 else src.snippet[:MAX_CLAIM_LENGTH]
             )
             claims.append(f"- {head[:MAX_CLAIM_LENGTH]} (source: {src.url})")
